@@ -7,6 +7,7 @@ type BattleCardViewProps = {
   onClick?: () => void;
   field?: boolean;
   damage?: number;
+  displayedStrength?: number;
   displayedHealth?: number;
   owner?: Owner;
   targetable?: boolean;
@@ -19,6 +20,7 @@ export function BattleCardView({
   onClick,
   field = false,
   damage,
+  displayedStrength,
   displayedHealth,
   owner,
   targetable = false,
@@ -26,30 +28,38 @@ export function BattleCardView({
 }: BattleCardViewProps) {
   return (
     <button
-      className={`battle-card${field ? " battle-card--field" : ""}${owner ? ` battle-card--${owner}` : ""}${damage !== undefined ? " battle-card--damaged" : ""}${targetable ? " battle-card--targetable" : ""}${invalidTarget ? " battle-card--invalid-target" : ""}`}
+      className={`battle-card${field ? " battle-card--field" : ""}${owner ? ` battle-card--${owner}` : ""}${damage !== undefined ? " battle-card--damaged" : ""}${displayedStrength !== undefined && displayedStrength < card.currentStrength ? " battle-card--weakened" : ""}${targetable ? " battle-card--targetable" : ""}${invalidTarget ? " battle-card--invalid-target" : ""}${card.ability.length > 110 ? " battle-card--verbose" : ""}`}
       type="button"
       disabled={disabled}
       onClick={onClick}
-      aria-label={`${card.name}. Strength ${card.currentStrength}. Health ${card.currentHealth}.${card.ability !== "None" ? ` Special Ability: ${card.ability}.` : ""}`}
+      aria-label={`${card.name}. Strength ${displayedStrength ?? card.currentStrength}. Health ${card.currentHealth}.${card.ability !== "None" ? ` Special Ability: ${card.ability}.` : ""}`}
     >
       <img src={card.image} alt="" />
       <span className="battle-card__shade" />
       <span className="battle-card__name">{card.name}</span>
       <span className="battle-card__stats" aria-hidden="true">
-        <span>STR <strong>{card.currentStrength}</strong></span>
+        <span>STR <strong>{displayedStrength ?? card.currentStrength}</strong></span>
         <span>HP <strong>{displayedHealth ?? card.currentHealth}</strong></span>
       </span>
       <span className="battle-card__ability" aria-hidden="true">
         <span className="battle-card__hover-name">{card.name}</span>
         <span className="battle-card__hover-divider" />
         <span className="battle-card__hover-stats">
-          <span>Strength <strong>{card.currentStrength}</strong></span>
+          <span>Strength <strong>{displayedStrength ?? card.currentStrength}</strong></span>
           <span>Health <strong>{displayedHealth ?? card.currentHealth}</strong></span>
         </span>
         {card.ability !== "None" && (
           <span className="battle-card__hover-ability">
             <small>Special Ability</small>
-            <strong className={card.ability.length > 25 ? "battle-card__ability--long" : ""}>
+            <strong
+              className={
+                card.ability.length > 110
+                  ? "battle-card__ability--very-long"
+                  : card.ability.length > 25
+                    ? "battle-card__ability--long"
+                    : ""
+              }
+            >
               <AbilityText ability={card.ability} />
             </strong>
           </span>

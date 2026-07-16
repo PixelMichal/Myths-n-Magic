@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { cards } from "./data/cards";
+import { cards, DECK_SIZE } from "./data/cards";
 import { BattleScreen } from "./screens/BattleScreen";
 import { DeckScreen } from "./screens/DeckScreen";
 import { TitleScreen } from "./screens/TitleScreen";
@@ -9,7 +9,7 @@ import "./styles/game.css";
 type Screen = "title" | "deck" | "battle";
 
 function VersionBadge() {
-  return <span className="version-badge">Version 1.0</span>;
+  return <span className="version-badge">Version 1.1</span>;
 }
 
 function App() {
@@ -36,11 +36,17 @@ function App() {
   };
 
   const toggleCard = (cardIndex: number) => {
-    setSelectedCards((currentCards) =>
-      currentCards.includes(cardIndex)
-        ? currentCards.filter((index) => index !== cardIndex)
-        : [...currentCards, cardIndex],
-    );
+    setSelectedCards((currentCards) => {
+      if (currentCards.includes(cardIndex)) {
+        return currentCards.filter((index) => index !== cardIndex);
+      }
+
+      if (currentCards.length >= DECK_SIZE) {
+        return currentCards;
+      }
+
+      return [...currentCards, cardIndex];
+    });
   };
 
   if (screen === "battle") {

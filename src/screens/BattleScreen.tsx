@@ -5,6 +5,11 @@ import { cards } from "../data/cards";
 import {
   activateAbility,
   createHand,
+  determineBattleResult,
+  getBlockedAbilityOwner,
+  getHealthAfterBonus,
+  getStrengthAfterWeaken,
+  MAX_ROUNDS,
   prepareCardForBattle,
   prepareSurvivor,
 } from "../game/battleLogic";
@@ -16,10 +21,17 @@ import type {
   Owner,
 } from "../game/types";
 
+const canReceiveTargetedAbility = (
+  sourceCard: BattleCard,
+  targetCard: BattleCard,
+) =>
+  sourceCard.effect !== "health" ||
+  getHealthAfterBonus(targetCard, 2) > targetCard.currentHealth;
+
 export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
   const [playerHand, setPlayerHand] = useState(() => createHand(playerDeck, "player"));
   const [botHand, setBotHand] = useState(() =>
-    createHand(cards.slice(0, playerDeck.length), "bot"),
+    createHand(cards, "bot"),
   );
   const [playerField, setPlayerField] = useState<BattleCard | null>(null);
   const [botField, setBotField] = useState<BattleCard | null>(null);
@@ -41,6 +53,10 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
   const [placementPreview, setPlacementPreview] = useState<BattleCard | null>(null);
   const [isPlayerCardLanding, setIsPlayerCardLanding] = useState(false);
   const [handBuffAnimation, setHandBuffAnimation] = useState<AbilityBuff | null>(null);
+  const blockedAbilityOwner =
+    phase === "combat" && playerField && botField
+      ? getBlockedAbilityOwner(round, playerField, botField)
+      : null;
 
   const placePlayerCard = (card: BattleCard) => {
     if (
@@ -107,20 +123,35 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       return;
     }
 
-    const isFieldTarget = playerField.id === targetCard.id;
-    const isHandTarget = playerHand.some((card) => card.id === targetCard.id);
+    const hasHandTargets = playerHand.length > 0;
+    const isFieldTarget =
+      !hasHandTargets && playerField.id === targetCard.id;
+    const isHandTarget = playerHand.some(
+      (card) =>
+        card.id === targetCard.id &&
+        canReceiveTargetedAbility(playerField, card),
+    );
 
-    if (!isFieldTarget && !isHandTarget) {
+    if (
+      (!isFieldTarget && !isHandTarget) ||
+      !canReceiveTargetedAbility(playerField, targetCard)
+    ) {
       return;
     }
 
+    const appliedAmount =
+      playerField.effect === "health"
+        ? getHealthAfterBonus(targetCard, 2) - targetCard.currentHealth
+        : 2;
     const applyTargetedEffect = (card: BattleCard, isAlreadyInBattle: boolean) => ({
       ...card,
       currentStrength:
         card.currentStrength +
         (playerField.effect === "strength" && !isAlreadyInBattle ? 2 : 0),
       currentHealth:
-        card.currentHealth + (playerField.effect === "health" ? 2 : 0),
+        playerField.effect === "health"
+          ? getHealthAfterBonus(card, 2)
+          : card.currentHealth,
       temporaryStrengthBonus:
         card.temporaryStrengthBonus +
         (playerField.effect === "strength" && !isAlreadyInBattle ? 2 : 0),
@@ -139,20 +170,28 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
           card.id === targetCard.id ? applyTargetedEffect(card, false) : card,
         ),
       );
-      setHandBuffAnimation({
-        targetId: targetCard.id,
-        type: playerField.effect,
-        amount: 2,
-      });
+      if (appliedAmount > 0) {
+        setHandBuffAnimation({
+          targetId: targetCard.id,
+          type: playerField.effect,
+          amount: appliedAmount,
+        });
+      }
     }
 
     setBattleLog((currentLog) =>
       [
         ...currentLog,
-        `${playerField.name} uses its ability on ${targetCard.name}.`,
+        appliedAmount > 0
+          ? `${playerField.name} uses its ability on ${targetCard.name}.`
+          : `${targetCard.name} is already at maximum Health.`,
       ].slice(-6),
     );
-    setStatus(`${playerField.name} empowers ${targetCard.name}`);
+    setStatus(
+      appliedAmount > 0
+        ? `${playerField.name} empowers ${targetCard.name}`
+        : `${targetCard.name} is already at maximum Health`,
+    );
     setTargetSelection("done");
   };
 
@@ -204,12 +243,39 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
     const orderedCards = activationOrder.map((owner) =>
       owner === "player" ? playerField : botField,
     );
-    const abilityMessage = (card: BattleCard) =>
-      card.effect === "none"
+    const abilityMessage = (card: BattleCard) => {
+      const owner: Owner = card.id === playerField.id ? "player" : "bot";
+
+      if (blockedAbilityOwner === owner) {
+        return `${card.name}'s special ability is blocked`;
+      }
+
+      return card.effect === "none"
         ? `${card.name} — no special ability`
-        : `${card.name} uses: ${card.ability}`;
-    const playerNeedsTarget =
+        : card.effect === "steal"
+          ? `${card.name} searches the opponent's hand`
+          : card.effect === "chaos"
+            ? `${card.name} tempts fate`
+            : card.effect === "weaken"
+              ? `${card.name} weakens the opposing card`
+              : card.effect === "area-damage"
+                ? `${card.name} scorches the opposing forces`
+              : card.effect === "silence"
+                ? orderedCards[0].id === card.id
+                  ? `${card.name} seals the opposing card's ability`
+                  : `${card.name} was not played first`
+                : `${card.name} uses: ${card.ability}`;
+    };
+    const hasTargetedAbility =
       playerField.effect === "health" || playerField.effect === "strength";
+    const potentialTargets =
+      playerHand.length > 0 ? playerHand : [playerField];
+    const playerNeedsTarget =
+      blockedAbilityOwner !== "player" &&
+      hasTargetedAbility &&
+      potentialTargets.some((card) =>
+        canReceiveTargetedAbility(playerField, card),
+      );
     const playerActsFirst = activationOrder[0] === "player";
 
     if (playerNeedsTarget && targetSelection === null) {
@@ -218,7 +284,11 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
         : window.setTimeout(() => setStatus(abilityMessage(botField)), 350);
       const selectionTimer = window.setTimeout(
         () => {
-          setStatus("Select a card");
+          setStatus(
+            playerHand.length > 0
+              ? "Select a card from your hand"
+              : "Select your active card",
+          );
           setTargetSelection("waiting");
         },
         playerActsFirst ? 350 : 1500,
@@ -237,17 +307,33 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
     }
 
     const playerAbilityHealth =
-      playerField.effect === "random-health" && playerHand.length === 0 ? 3 : 0;
+      blockedAbilityOwner !== "player" &&
+      playerField.effect === "random-health" &&
+      playerHand.length === 0
+        ? getHealthAfterBonus(playerField, 3) - playerField.currentHealth
+        : 0;
     const botAbilityHealth =
-      botHand.length === 0
+      blockedAbilityOwner !== "bot" && botHand.length === 0
         ? botField.effect === "health"
-          ? 2
+          ? getHealthAfterBonus(botField, 2) - botField.currentHealth
           : botField.effect === "random-health"
-            ? 3
+            ? getHealthAfterBonus(botField, 3) - botField.currentHealth
             : 0
         : 0;
-    const playerCombatStrength = playerField.currentStrength;
-    const botCombatStrength = botField.currentStrength;
+    const damageToPlayerFromAbility =
+      botField.effect === "area-damage" && blockedAbilityOwner !== "bot" ? 1 : 0;
+    const damageToBotFromAbility =
+      playerField.effect === "area-damage" && blockedAbilityOwner !== "player"
+        ? 1
+        : 0;
+    const playerCombatStrength =
+      botField.effect === "weaken" && blockedAbilityOwner !== "bot"
+        ? getStrengthAfterWeaken(playerField.currentStrength)
+        : playerField.currentStrength;
+    const botCombatStrength =
+      playerField.effect === "weaken" && blockedAbilityOwner !== "player"
+        ? getStrengthAfterWeaken(botField.currentStrength)
+        : botField.currentStrength;
     const abilityTimers: number[] = [];
     let damageDelay = 2650;
 
@@ -278,11 +364,17 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       setDamagePreview({
         playerHealth: Math.max(
           0,
-          playerField.currentHealth + playerAbilityHealth - botCombatStrength,
+          playerField.currentHealth +
+            playerAbilityHealth -
+            damageToPlayerFromAbility -
+            botCombatStrength,
         ),
         botHealth: Math.max(
           0,
-          botField.currentHealth + botAbilityHealth - playerCombatStrength,
+          botField.currentHealth +
+            botAbilityHealth -
+            damageToBotFromAbility -
+            playerCombatStrength,
         ),
         playerDamage: botCombatStrength,
         botDamage: playerCombatStrength,
@@ -303,19 +395,55 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
 
       activationOrder.forEach((owner) => {
         if (owner === "player") {
-          if (playerNeedsTarget && targetSelection === "done") {
+          if (blockedAbilityOwner === "player") {
+            combatMessages.push(
+              `${activePlayerCard.name}'s special ability is blocked by Foyer.`,
+            );
+          } else if (activePlayerCard.effect === "silence") {
+            combatMessages.push(
+              activationOrder[0] === "player"
+                ? `${activePlayerCard.name} blocks ${activeBotCard.name}'s special ability.`
+                : `${activePlayerCard.name} was not played first, so its ability does not activate.`,
+            );
+          } else if (playerNeedsTarget && targetSelection === "done") {
             combatMessages.push(`${activePlayerCard.name}'s targeted ability resolves.`);
           } else {
-            const activation = activateAbility(activePlayerCard, activePlayerHand);
+            const activation = activateAbility(
+              activePlayerCard,
+              activePlayerHand,
+              activeBotHand,
+              Math.random,
+              activeBotCard,
+            );
             activePlayerCard = activation.card;
             activePlayerHand = activation.hand;
+            activeBotHand = activation.opponentHand ?? activeBotHand;
+            activeBotCard = activation.opponentCard ?? activeBotCard;
             combatMessages.push(activation.message);
             resolvedHandBuff = activation.buff;
           }
+        } else if (blockedAbilityOwner === "bot") {
+          combatMessages.push(
+            `${activeBotCard.name}'s special ability is blocked by Foyer.`,
+          );
+        } else if (activeBotCard.effect === "silence") {
+          combatMessages.push(
+            activationOrder[0] === "bot"
+              ? `${activeBotCard.name} blocks ${activePlayerCard.name}'s special ability.`
+              : `${activeBotCard.name} was not played first, so its ability does not activate.`,
+          );
         } else {
-          const activation = activateAbility(activeBotCard, activeBotHand);
+          const activation = activateAbility(
+            activeBotCard,
+            activeBotHand,
+            activePlayerHand,
+            Math.random,
+            activePlayerCard,
+          );
           activeBotCard = activation.card;
           activeBotHand = activation.hand;
+          activePlayerHand = activation.opponentHand ?? activePlayerHand;
+          activePlayerCard = activation.opponentCard ?? activePlayerCard;
           combatMessages.push(activation.message);
         }
       });
@@ -328,7 +456,11 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
         `${activePlayerCard.name} and ${activeBotCard.name} deal ${damageToBot} and ${damageToPlayer} damage.`,
       );
 
-      if (activePlayerCard.currentHealth > 0) {
+      if (activePlayerCard.effect === "steal") {
+        combatMessages.push(
+          `${activePlayerCard.name} disappears after the battle.`,
+        );
+      } else if (activePlayerCard.currentHealth > 0) {
         activePlayerHand.push(prepareSurvivor(activePlayerCard));
         combatMessages.push(
           `${activePlayerCard.name} returns to your hand with ${activePlayerCard.currentHealth} HP.`,
@@ -337,13 +469,27 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
         combatMessages.push(`${activePlayerCard.name} is defeated.`);
       }
 
-      if (activeBotCard.currentHealth > 0) {
+      if (activeBotCard.effect === "steal") {
+        combatMessages.push(
+          `${activeBotCard.name} disappears after the battle.`,
+        );
+      } else if (activeBotCard.currentHealth > 0) {
         activeBotHand.push(prepareSurvivor(activeBotCard));
         combatMessages.push(
           `${activeBotCard.name} returns to the opponent's hand with ${activeBotCard.currentHealth} HP.`,
         );
       } else {
         combatMessages.push(`${activeBotCard.name} is defeated.`);
+      }
+
+      const cardsEliminated =
+        activePlayerHand.length === 0 || activeBotHand.length === 0;
+      const roundLimitReached = round >= MAX_ROUNDS;
+
+      if (roundLimitReached && !cardsEliminated) {
+        combatMessages.push(
+          `The ${MAX_ROUNDS}-round limit is reached. Remaining cards and Health decide the battle.`,
+        );
       }
 
       setPlayerHand(activePlayerHand);
@@ -359,13 +505,11 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       setTargetSelection(null);
       setBattleLog((currentLog) => [...currentLog, ...combatMessages].slice(-6));
 
-      if (activePlayerHand.length === 0 || activeBotHand.length === 0) {
-        const battleResult =
-          activePlayerHand.length === activeBotHand.length
-            ? "Draw"
-            : activePlayerHand.length > 0
-              ? "Victory"
-              : "Defeat";
+      if (cardsEliminated || roundLimitReached) {
+        const battleResult = determineBattleResult(
+          activePlayerHand,
+          activeBotHand,
+        );
         setResult(battleResult);
         setStatus(battleResult);
         setPhase("finished");
@@ -389,7 +533,16 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       window.clearTimeout(impactClearTimer);
       window.clearTimeout(resolutionTimer);
     };
-  }, [botField, botHand, phase, playerField, playerHand, round, targetSelection]);
+  }, [
+    blockedAbilityOwner,
+    botField,
+    botHand,
+    phase,
+    playerField,
+    playerHand,
+    round,
+    targetSelection,
+  ]);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -430,15 +583,20 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
             <span>Darkwood Passage</span>
             <h1 id="level-title">Level 1</h1>
           </div>
+          <div className="battle-objective">
+            <span>Objective</span>
+            <strong>Defeat all opponent cards</strong>
+            <small>Health bonus cap +5</small>
+          </div>
           <div className="round-indicator">
             <span>Round</span>
-            <strong>{round}</strong>
+            <strong>{round}/{MAX_ROUNDS}</strong>
           </div>
         </header>
 
         <section className="opponent-area" aria-label="Opponent hand">
           <div className="battle-zone-label">
-            <span>AI Opponent</span>
+            <span>Ramon</span>
             <strong>{botHand.length} cards</strong>
           </div>
           <div className="opponent-hand">
@@ -496,7 +654,9 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                 animate={
                   isAttacking
                     ? { x: [0, 18, 54], rotate: [0, -1.2, 1.4], scale: [1, 1.025, 1.055] }
-                    : damagePreview?.playerHealth === 0
+                    : damagePreview &&
+                        (damagePreview.playerHealth === 0 ||
+                          playerField.effect === "steal")
                       ? {
                           x: 0,
                           y: [0, 5, 18],
@@ -510,7 +670,9 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                 transition={
                   isAttacking
                     ? { duration: 0.62, times: [0, 0.45, 1], ease: [0.4, 0, 0.2, 1] }
-                    : damagePreview?.playerHealth === 0
+                    : damagePreview &&
+                        (damagePreview.playerHealth === 0 ||
+                          playerField.effect === "steal")
                       ? { duration: 1.5, times: [0, 0.38, 1], ease: [0.4, 0, 0.6, 1] }
                       : {
                           x: { type: "spring", stiffness: 145, damping: 17 },
@@ -522,9 +684,28 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                   card={playerField}
                   field
                   owner="player"
-                  disabled={targetSelection !== "waiting"}
+                  disabled={
+                    targetSelection !== "waiting" ||
+                    playerHand.length > 0 ||
+                    !canReceiveTargetedAbility(playerField, playerField)
+                  }
                   onClick={() => selectAbilityTarget(playerField)}
-                  targetable={targetSelection === "waiting"}
+                  targetable={
+                    targetSelection === "waiting" &&
+                    playerHand.length === 0 &&
+                    canReceiveTargetedAbility(playerField, playerField)
+                  }
+                  invalidTarget={
+                    targetSelection === "waiting" &&
+                    (playerHand.length > 0 ||
+                      !canReceiveTargetedAbility(playerField, playerField))
+                  }
+                  displayedStrength={
+                    botField?.effect === "weaken" &&
+                    blockedAbilityOwner !== "bot"
+                      ? getStrengthAfterWeaken(playerField.currentStrength)
+                      : undefined
+                  }
                   damage={damagePreview?.playerDamage}
                   displayedHealth={damagePreview?.playerHealth}
                 />
@@ -573,7 +754,9 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                 animate={
                   isAttacking
                     ? { x: [0, -18, -54], rotate: [0, 1.2, -1.4], scale: [1, 1.025, 1.055] }
-                    : damagePreview?.botHealth === 0
+                    : damagePreview &&
+                        (damagePreview.botHealth === 0 ||
+                          botField.effect === "steal")
                       ? {
                           x: 0,
                           y: [0, 5, 18],
@@ -587,7 +770,9 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                 transition={
                   isAttacking
                     ? { duration: 0.62, times: [0, 0.45, 1], ease: [0.4, 0, 0.2, 1] }
-                    : damagePreview?.botHealth === 0
+                    : damagePreview &&
+                        (damagePreview.botHealth === 0 ||
+                          botField.effect === "steal")
                       ? { duration: 1.5, times: [0, 0.38, 1], ease: [0.4, 0, 0.6, 1] }
                       : { x: { type: "spring", stiffness: 145, damping: 17 } }
                 }
@@ -597,6 +782,12 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                   field
                   owner="bot"
                   invalidTarget={targetSelection === "waiting"}
+                  displayedStrength={
+                    playerField?.effect === "weaken" &&
+                    blockedAbilityOwner !== "player"
+                      ? getStrengthAfterWeaken(botField.currentStrength)
+                      : undefined
+                  }
                   damage={damagePreview?.botDamage}
                   displayedHealth={damagePreview?.botHealth}
                 />
@@ -633,6 +824,8 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
             {playerHand.map((card) => {
               const activeBuff =
                 handBuffAnimation?.targetId === card.id ? handBuffAnimation : null;
+              const canReceiveAbility =
+                !playerField || canReceiveTargetedAbility(playerField, card);
 
               return (
                 <motion.div
@@ -674,14 +867,19 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                     card={card}
                     disabled={
                       targetSelection === "waiting"
-                        ? false
+                        ? !canReceiveAbility
                         : phase !== "placing" ||
                           turn !== "player" ||
                           Boolean(playerField) ||
                           Boolean(placementPreview) ||
                           isPlayerCardLanding
                     }
-                    targetable={targetSelection === "waiting"}
+                    targetable={
+                      targetSelection === "waiting" && canReceiveAbility
+                    }
+                    invalidTarget={
+                      targetSelection === "waiting" && !canReceiveAbility
+                    }
                     onClick={() =>
                       targetSelection === "waiting"
                         ? selectAbilityTarget(card)

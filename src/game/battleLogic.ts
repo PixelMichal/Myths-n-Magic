@@ -1,5 +1,8 @@
 import type { BattleCard, CardDefinition, Owner } from "./types";
 
+export const MAX_HEALTH_BONUS = 5;
+export const MAX_ROUNDS = 20;
+
 export type AbilityBuff = {
   targetId: string;
   type: "health" | "strength";
@@ -9,6 +12,8 @@ export type AbilityBuff = {
 type AbilityResult = {
   card: BattleCard;
   hand: BattleCard[];
+  opponentHand?: BattleCard[];
+  opponentCard?: BattleCard;
   message: string;
   buff?: AbilityBuff;
 };
@@ -27,62 +32,342 @@ const shuffle = <T,>(items: T[]) => {
   return shuffledItems;
 };
 
+export const rollCardStrength = (
+  card: CardDefinition | BattleCard,
+  random: () => number = Math.random,
+) => {
+  if (!card.strengthRange) {
+    return card.strength;
+  }
+
+  const [minimumStrength, maximumStrength] = card.strengthRange;
+  return (
+    minimumStrength +
+    Math.floor(random() * (maximumStrength - minimumStrength + 1))
+  );
+};
+
 export const createHand = (deck: CardDefinition[], owner: Owner) =>
   shuffle(deck)
     .slice(0, 5)
     .map((card, index) => ({
       ...card,
       id: `${owner}-${card.name}-${index}`,
-      currentStrength: card.strength,
+      currentStrength: rollCardStrength(card),
       currentHealth: card.health,
       temporaryStrengthBonus: 0,
+      temporaryStrengthPenalty: 0,
       nextBattleStrengthBonus: 0,
     }));
 
-export const prepareCardForBattle = (card: BattleCard): BattleCard => ({
-  ...card,
-  currentStrength: card.currentStrength + card.nextBattleStrengthBonus,
-  temporaryStrengthBonus:
-    card.temporaryStrengthBonus + card.nextBattleStrengthBonus,
-  nextBattleStrengthBonus: 0,
-});
+export const prepareCardForBattle = (
+  card: BattleCard,
+  random: () => number = Math.random,
+): BattleCard => {
+  const currentStrength = card.strengthRange
+    ? rollCardStrength(card, random) +
+      card.temporaryStrengthBonus +
+      card.nextBattleStrengthBonus
+    : card.currentStrength + card.nextBattleStrengthBonus;
+
+  return {
+    ...card,
+    currentStrength,
+    temporaryStrengthBonus:
+      card.temporaryStrengthBonus + card.nextBattleStrengthBonus,
+    nextBattleStrengthBonus: 0,
+  };
+};
 
 export const prepareSurvivor = (card: BattleCard): BattleCard => ({
   ...card,
-  currentStrength: card.currentStrength - card.temporaryStrengthBonus,
+  currentStrength:
+    card.currentStrength -
+    card.temporaryStrengthBonus +
+    card.temporaryStrengthPenalty,
   temporaryStrengthBonus: 0,
+  temporaryStrengthPenalty: 0,
 });
+
+export const getMaximumHealth = (card: BattleCard) =>
+  card.health + MAX_HEALTH_BONUS;
+
+export const getHealthAfterBonus = (card: BattleCard, amount: number) =>
+  Math.min(getMaximumHealth(card), card.currentHealth + amount);
+
+export const getStrengthAfterWeaken = (strength: number) =>
+  Math.max(1, strength - 2);
+
+const grantHealth = (card: BattleCard, amount: number) => {
+  const updatedHealth = getHealthAfterBonus(card, amount);
+
+  return {
+    card: { ...card, currentHealth: updatedHealth },
+    amount: updatedHealth - card.currentHealth,
+  };
+};
+
+const selectMostInjuredCard = (hand: BattleCard[]) => {
+  const eligibleCards = hand.filter(
+    (card) => card.currentHealth < getMaximumHealth(card),
+  );
+  const injuredCards = eligibleCards.filter(
+    (card) => card.currentHealth < card.health,
+  );
+  const targetPool = injuredCards.length > 0 ? injuredCards : eligibleCards;
+
+  return targetPool.reduce<BattleCard | undefined>((selected, card) => {
+    if (!selected) {
+      return card;
+    }
+
+    if (injuredCards.length === 0) {
+      return card.currentStrength > selected.currentStrength ? card : selected;
+    }
+
+    const selectedHealthRatio = selected.currentHealth / selected.health;
+    const cardHealthRatio = card.currentHealth / card.health;
+
+    return cardHealthRatio < selectedHealthRatio ? card : selected;
+  }, undefined);
+};
+
+const selectStrongestCard = (hand: BattleCard[]) =>
+  hand.reduce<BattleCard | undefined>(
+    (selected, card) =>
+      !selected || card.currentStrength > selected.currentStrength
+        ? card
+        : selected,
+    undefined,
+  );
+
+export const determineBattleResult = (
+  playerHand: BattleCard[],
+  botHand: BattleCard[],
+) => {
+  if (playerHand.length !== botHand.length) {
+    return playerHand.length > botHand.length ? "Victory" : "Defeat";
+  }
+
+  const playerHealth = playerHand.reduce(
+    (total, card) => total + card.currentHealth,
+    0,
+  );
+  const botHealth = botHand.reduce(
+    (total, card) => total + card.currentHealth,
+    0,
+  );
+
+  if (playerHealth !== botHealth) {
+    return playerHealth > botHealth ? "Victory" : "Defeat";
+  }
+
+  return "Draw";
+};
+
+export const getBlockedAbilityOwner = (
+  round: number,
+  playerCard: BattleCard,
+  botCard: BattleCard,
+): Owner | null => {
+  const firstOwner: Owner = round % 2 === 1 ? "player" : "bot";
+  const firstCard = firstOwner === "player" ? playerCard : botCard;
+
+  if (firstCard.effect !== "silence") {
+    return null;
+  }
+
+  return firstOwner === "player" ? "bot" : "player";
+};
 
 export function activateAbility(
   card: BattleCard,
   hand: BattleCard[],
+  opponentHand: BattleCard[] = [],
+  random: () => number = Math.random,
+  opponentCard?: BattleCard,
 ): AbilityResult {
   const activeCard = { ...card };
   const activeHand = hand.map((handCard) => ({ ...handCard }));
 
+  if (card.effect === "steal") {
+    const ownedCardNames = new Set(
+      activeHand.map((handCard) => handCard.name),
+    );
+    const eligibleCards = opponentHand.filter(
+      (opponentCard) => !ownedCardNames.has(opponentCard.name),
+    );
+
+    if (eligibleCards.length === 0) {
+      return {
+        card: activeCard,
+        hand: activeHand,
+        opponentHand: opponentHand.map((opponentCard) => ({ ...opponentCard })),
+        message: `${card.name} finds no unique card to steal.`,
+      };
+    }
+
+    const stolenCard = {
+      ...eligibleCards[Math.floor(random() * eligibleCards.length)],
+    };
+
+    return {
+      card: activeCard,
+      hand: [...activeHand, stolenCard],
+      opponentHand: opponentHand
+        .filter((opponentCard) => opponentCard.id !== stolenCard.id)
+        .map((opponentCard) => ({ ...opponentCard })),
+      message: `${card.name} steals ${stolenCard.name} from the opponent's hand.`,
+    };
+  }
+
+  if (card.effect === "chaos") {
+    const activeOpponentHand = opponentHand.map((opponentCard) => ({
+      ...opponentCard,
+    }));
+    const destroysOpponentCard = random() < 0.1;
+    const destroysAlliedCard = random() < 0.1;
+    const messages: string[] = [];
+
+    if (destroysOpponentCard && activeOpponentHand.length > 0) {
+      const targetIndex = Math.floor(random() * activeOpponentHand.length);
+      const [destroyedCard] = activeOpponentHand.splice(targetIndex, 1);
+      messages.push(
+        `${card.name} destroys ${destroyedCard.name} in the opponent's hand.`,
+      );
+    }
+
+    if (destroysAlliedCard && activeHand.length > 0) {
+      const targetIndex = Math.floor(random() * activeHand.length);
+      const [destroyedCard] = activeHand.splice(targetIndex, 1);
+      messages.push(
+        `${card.name}'s chaos destroys allied ${destroyedCard.name}.`,
+      );
+    }
+
+    return {
+      card: activeCard,
+      hand: activeHand,
+      opponentHand: activeOpponentHand,
+      message:
+        messages.length > 0
+          ? messages.join(" ")
+          : `${card.name}'s chaos destroys no cards.`,
+    };
+  }
+
+  if (card.effect === "weaken") {
+    if (!opponentCard) {
+      return {
+        card: activeCard,
+        hand: activeHand,
+        message: `${card.name} finds no opposing card to weaken.`,
+      };
+    }
+
+    const weakenedStrength = getStrengthAfterWeaken(
+      opponentCard.currentStrength,
+    );
+    const strengthReduction = opponentCard.currentStrength - weakenedStrength;
+    const weakenedCard = {
+      ...opponentCard,
+      currentStrength: weakenedStrength,
+      temporaryStrengthPenalty:
+        opponentCard.temporaryStrengthPenalty + strengthReduction,
+    };
+
+    return {
+      card: activeCard,
+      hand: activeHand,
+      opponentCard: weakenedCard,
+      message: `${card.name} reduces ${opponentCard.name}'s Strength by ${strengthReduction} for this battle.`,
+    };
+  }
+
+  if (card.effect === "area-damage") {
+    const damagedOpponentCard = opponentCard
+      ? {
+          ...opponentCard,
+          currentHealth: opponentCard.currentHealth - 1,
+        }
+      : undefined;
+    const defeatedCards: string[] = [];
+    const damagedOpponentHand = opponentHand
+      .map((handCard) => ({
+        ...handCard,
+        currentHealth: handCard.currentHealth - 1,
+      }))
+      .filter((handCard) => {
+        if (handCard.currentHealth <= 0) {
+          defeatedCards.push(handCard.name);
+          return false;
+        }
+
+        return true;
+      });
+    const defeatedMessage =
+      defeatedCards.length > 0
+        ? ` ${defeatedCards.join(", ")} ${defeatedCards.length === 1 ? "is" : "are"} destroyed in the opponent's hand.`
+        : "";
+
+    return {
+      card: activeCard,
+      hand: activeHand,
+      opponentHand: damagedOpponentHand,
+      opponentCard: damagedOpponentCard,
+      message: `${card.name} deals 1 damage to ${opponentCard?.name ?? "the opposing card"} and every card in the opponent's hand.${defeatedMessage}`,
+    };
+  }
+
   if (card.effect === "health") {
     if (activeHand.length > 0) {
-      const targetIndex = Math.floor(Math.random() * activeHand.length);
-      activeHand[targetIndex].currentHealth += 2;
+      const target = selectMostInjuredCard(activeHand);
+
+      if (!target) {
+        return {
+          card: activeCard,
+          hand: activeHand,
+          message: `${card.name}'s allies are already at maximum Health.`,
+        };
+      }
+
+      const targetIndex = activeHand.findIndex(
+        (handCard) => handCard.id === target.id,
+      );
+      const healthBonus = grantHealth(activeHand[targetIndex], 2);
+      activeHand[targetIndex] = healthBonus.card;
 
       return {
         card: activeCard,
         hand: activeHand,
-        message: `${card.name} grants ${activeHand[targetIndex].name} +2 Health.`,
+        message: `${card.name} grants ${activeHand[targetIndex].name} +${healthBonus.amount} Health.`,
         buff: {
           targetId: activeHand[targetIndex].id,
           type: "health",
-          amount: 2,
+          amount: healthBonus.amount,
         },
       };
     }
 
-    activeCard.currentHealth += 2;
+    const healthBonus = grantHealth(activeCard, 2);
+    activeCard.currentHealth = healthBonus.card.currentHealth;
+
+    return {
+      card: activeCard,
+      hand: activeHand,
+      message:
+        healthBonus.amount > 0
+          ? `${card.name} gains +${healthBonus.amount} Health.`
+          : `${card.name} is already at maximum Health.`,
+    };
   }
 
   if (card.effect === "strength") {
     if (activeHand.length > 0) {
-      const targetIndex = Math.floor(Math.random() * activeHand.length);
+      const target = selectStrongestCard(activeHand);
+      const targetIndex = activeHand.findIndex(
+        (handCard) => handCard.id === target?.id,
+      );
       activeHand[targetIndex].currentStrength += 2;
       activeHand[targetIndex].temporaryStrengthBonus += 2;
 
@@ -109,22 +394,49 @@ export function activateAbility(
 
   if (card.effect === "random-health") {
     if (activeHand.length > 0) {
-      const targetIndex = Math.floor(Math.random() * activeHand.length);
-      activeHand[targetIndex].currentHealth += 3;
+      const eligibleTargets = activeHand.filter(
+        (handCard) => handCard.currentHealth < getMaximumHealth(handCard),
+      );
+
+      if (eligibleTargets.length === 0) {
+        return {
+          card: activeCard,
+          hand: activeHand,
+          message: `${card.name}'s allies are already at maximum Health.`,
+        };
+      }
+
+      const target =
+        eligibleTargets[Math.floor(random() * eligibleTargets.length)];
+      const targetIndex = activeHand.findIndex(
+        (handCard) => handCard.id === target.id,
+      );
+      const healthBonus = grantHealth(activeHand[targetIndex], 3);
+      activeHand[targetIndex] = healthBonus.card;
 
       return {
         card: activeCard,
         hand: activeHand,
-        message: `${card.name} grants ${activeHand[targetIndex].name} +3 Health.`,
+        message: `${card.name} grants ${activeHand[targetIndex].name} +${healthBonus.amount} Health.`,
         buff: {
           targetId: activeHand[targetIndex].id,
           type: "health",
-          amount: 3,
+          amount: healthBonus.amount,
         },
       };
     }
 
-    activeCard.currentHealth += 3;
+    const healthBonus = grantHealth(activeCard, 3);
+    activeCard.currentHealth = healthBonus.card.currentHealth;
+
+    return {
+      card: activeCard,
+      hand: activeHand,
+      message:
+        healthBonus.amount > 0
+          ? `${card.name} gains +${healthBonus.amount} Health.`
+          : `${card.name} is already at maximum Health.`,
+    };
   }
 
   return {
