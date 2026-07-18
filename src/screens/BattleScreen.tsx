@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "motion/react";
 import { BattleCardView } from "../components/cards/BattleCardView";
-import { cards } from "../data/cards";
+import type { OpponentDefinition } from "../data/opponents";
 import {
   activateAbility,
+  applyPermanentStrengthLoss,
   createHand,
   determineBattleResult,
   getBlockedAbilityOwner,
   getHealthAfterBonus,
+  getNormalCombatDamage,
+  getStrengthDrainAmount,
   getStrengthAfterWeaken,
+  INITIAL_HAND_SIZE,
   MAX_ROUNDS,
   prepareCardForBattle,
   prepareSurvivor,
@@ -21,6 +25,12 @@ import type {
   Owner,
 } from "../game/types";
 
+declare global {
+  interface Window {
+    winBattle?: () => string;
+  }
+}
+
 const canReceiveTargetedAbility = (
   sourceCard: BattleCard,
   targetCard: BattleCard,
@@ -28,18 +38,37 @@ const canReceiveTargetedAbility = (
   sourceCard.effect !== "health" ||
   getHealthAfterBonus(targetCard, 2) > targetCard.currentHealth;
 
-export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
+type BattleScreenProps = {
+  playerDeck: CardDefinition[];
+  level: 1 | 2 | 3;
+  opponent: OpponentDefinition;
+  onVictory?: () => void;
+};
+
+export function BattleScreen({
+  playerDeck,
+  level,
+  opponent,
+  onVictory,
+}: BattleScreenProps) {
+  const [showOpponentIntro, setShowOpponentIntro] = useState(true);
   const [playerHand, setPlayerHand] = useState(() => createHand(playerDeck, "player"));
   const [botHand, setBotHand] = useState(() =>
-    createHand(cards, "bot"),
+    createHand(opponent.deck, "bot"),
   );
+  const [playerGraveyard, setPlayerGraveyard] = useState<BattleCard[]>([]);
+  const [botGraveyard, setBotGraveyard] = useState<BattleCard[]>([]);
+  const [playerElyraAbilityUsed, setPlayerElyraAbilityUsed] = useState(false);
+  const [botElyraAbilityUsed, setBotElyraAbilityUsed] = useState(false);
   const [playerField, setPlayerField] = useState<BattleCard | null>(null);
   const [botField, setBotField] = useState<BattleCard | null>(null);
   const [turn, setTurn] = useState<Owner>("player");
   const [phase, setPhase] = useState<BattlePhase>("placing");
   const [round, setRound] = useState(1);
   const [status, setStatus] = useState("Your turn — choose a card");
-  const [battleLog, setBattleLog] = useState<string[]>(["Both players draw 5 cards."]);
+  const [battleLog, setBattleLog] = useState<string[]>([
+    `Both players draw ${INITIAL_HAND_SIZE} cards.`,
+  ]);
   const [result, setResult] = useState("");
   const [isAttacking, setIsAttacking] = useState(false);
   const [showImpact, setShowImpact] = useState(false);
@@ -57,6 +86,119 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
     phase === "combat" && playerField && botField
       ? getBlockedAbilityOwner(round, playerField, botField)
       : null;
+  const secondCardOwner: Owner = round % 2 === 1 ? "bot" : "player";
+  const playerSecondStrengthBonus =
+    phase === "combat" &&
+    playerField?.effect === "second-strength" &&
+    secondCardOwner === "player" &&
+    blockedAbilityOwner !== "player"
+      ? 2
+      : 0;
+  const botSecondStrengthBonus =
+    phase === "combat" &&
+    botField?.effect === "second-strength" &&
+    secondCardOwner === "bot" &&
+    blockedAbilityOwner !== "bot"
+      ? 2
+      : 0;
+  const playerPreviewDrain =
+    phase === "combat" &&
+    playerField?.effect === "strength-drain" &&
+    botField &&
+    blockedAbilityOwner !== "player"
+      ? getStrengthDrainAmount(
+          botField.currentStrength + botSecondStrengthBonus,
+        )
+      : 0;
+  const botPreviewDrain =
+    phase === "combat" &&
+    botField?.effect === "strength-drain" &&
+    playerField &&
+    blockedAbilityOwner !== "bot"
+      ? getStrengthDrainAmount(
+          playerField.currentStrength + playerSecondStrengthBonus,
+        )
+      : 0;
+  const playerDisplayedStrength =
+    phase === "combat" && playerField && botField
+      ? botField.effect === "weaken" && blockedAbilityOwner !== "bot"
+        ? getStrengthAfterWeaken(
+            playerField.currentStrength +
+              playerSecondStrengthBonus +
+              playerPreviewDrain -
+              botPreviewDrain,
+          )
+        : playerField.currentStrength +
+          playerSecondStrengthBonus +
+          playerPreviewDrain -
+          botPreviewDrain
+      : undefined;
+  const botDisplayedStrength =
+    phase === "combat" && playerField && botField
+      ? playerField.effect === "weaken" && blockedAbilityOwner !== "player"
+        ? getStrengthAfterWeaken(
+            botField.currentStrength +
+              botSecondStrengthBonus +
+              botPreviewDrain -
+              playerPreviewDrain,
+          )
+        : botField.currentStrength +
+          botSecondStrengthBonus +
+          botPreviewDrain -
+          playerPreviewDrain
+      : undefined;
+
+  useEffect(() => {
+    const introTimer = window.setTimeout(() => {
+      setShowOpponentIntro(false);
+    }, 2800);
+
+    return () => window.clearTimeout(introTimer);
+  }, []);
+
+  useEffect(() => {
+    if (result !== "Victory" || !onVictory) {
+      return;
+    }
+
+    const rewardTimer = window.setTimeout(onVictory, 1800);
+    return () => window.clearTimeout(rewardTimer);
+  }, [onVictory, result]);
+
+  useEffect(() => {
+    const triggerTestVictory = () => {
+      setShowOpponentIntro(false);
+      setPhase("finished");
+      setResult("Victory");
+      setStatus("Victory");
+      setTurn("player");
+      setPlayerField(null);
+      setBotField(null);
+      setBotHand([]);
+      setPlacementPreview(null);
+      setIsPlayerCardLanding(false);
+      setIsAttacking(false);
+      setShowImpact(false);
+      setDamagePreview(null);
+      setTargetSelection(null);
+      setBattleLog((currentLog) =>
+        [
+          ...currentLog,
+          `Test command: Level ${level} victory over ${opponent.name}.`,
+        ].slice(-6),
+      );
+
+      return `Level ${level} victory triggered.`;
+    };
+
+    window.winBattle = triggerTestVictory;
+
+    return () => {
+      if (window.winBattle === triggerTestVictory) {
+        delete window.winBattle;
+      }
+    };
+  }, [level, opponent.name]);
 
   const placePlayerCard = (card: BattleCard) => {
     if (
@@ -107,12 +249,12 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
         setStatus("Combat begins");
       } else {
         setTurn("bot");
-        setStatus("The opponent is choosing a card");
+        setStatus(`${opponent.name} is choosing a card`);
       }
     }, 700);
 
     return () => window.clearTimeout(timer);
-  }, [botField, isPlayerCardLanding, playerField]);
+  }, [botField, isPlayerCardLanding, opponent.name, playerField]);
 
   const selectAbilityTarget = (targetCard: BattleCard) => {
     if (
@@ -219,7 +361,7 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       );
       setBotField(prepareCardForBattle(card));
       setBattleLog((currentLog) =>
-        [...currentLog, `The opponent places ${card.name}.`].slice(-6),
+        [...currentLog, `${opponent.name} places ${card.name}.`].slice(-6),
       );
 
       if (playerField) {
@@ -232,7 +374,7 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
     }, 800);
 
     return () => window.clearTimeout(timer);
-  }, [botField, botHand, phase, playerField, turn]);
+  }, [botField, botHand, opponent.name, phase, playerField, turn]);
 
   useEffect(() => {
     if (phase !== "combat" || !playerField || !botField) {
@@ -258,6 +400,18 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
             ? `${card.name} tempts fate`
             : card.effect === "weaken"
               ? `${card.name} weakens the opposing card`
+              : card.effect === "survivor-curse"
+                ? `${card.name} places a lasting curse`
+                : card.effect === "resurrect"
+                  ? `${card.name} calls to a fallen ally`
+                  : card.effect === "second-strength"
+                    ? owner === secondCardOwner
+                      ? `${card.name} gains +2 Strength`
+                      : `${card.name} was not played second`
+                    : card.effect === "damage-reduction"
+                      ? `${card.name} braces for the incoming strike`
+                    : card.effect === "strength-drain"
+                      ? `${card.name} drains the opposing card's Strength`
               : card.effect === "area-damage"
                 ? `${card.name} scorches the opposing forces`
               : card.effect === "silence"
@@ -306,19 +460,12 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       return;
     }
 
-    const playerAbilityHealth =
-      blockedAbilityOwner !== "player" &&
-      playerField.effect === "random-health" &&
-      playerHand.length === 0
-        ? getHealthAfterBonus(playerField, 3) - playerField.currentHealth
-        : 0;
+    const playerAbilityHealth = 0;
     const botAbilityHealth =
       blockedAbilityOwner !== "bot" && botHand.length === 0
         ? botField.effect === "health"
           ? getHealthAfterBonus(botField, 2) - botField.currentHealth
-          : botField.effect === "random-health"
-            ? getHealthAfterBonus(botField, 3) - botField.currentHealth
-            : 0
+          : 0
         : 0;
     const damageToPlayerFromAbility =
       botField.effect === "area-damage" && blockedAbilityOwner !== "bot" ? 1 : 0;
@@ -326,14 +473,41 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       playerField.effect === "area-damage" && blockedAbilityOwner !== "player"
         ? 1
         : 0;
+    const playerStrengthWithSecondBonus =
+      playerField.currentStrength + playerSecondStrengthBonus;
+    const botStrengthWithSecondBonus =
+      botField.currentStrength + botSecondStrengthBonus;
+    const playerDrainAmount =
+      playerField.effect === "strength-drain" &&
+      blockedAbilityOwner !== "player"
+        ? getStrengthDrainAmount(botStrengthWithSecondBonus)
+        : 0;
+    const botDrainAmount =
+      botField.effect === "strength-drain" && blockedAbilityOwner !== "bot"
+        ? getStrengthDrainAmount(playerStrengthWithSecondBonus)
+        : 0;
+    const playerStrengthAfterDrain =
+      playerStrengthWithSecondBonus + playerDrainAmount - botDrainAmount;
+    const botStrengthAfterDrain =
+      botStrengthWithSecondBonus + botDrainAmount - playerDrainAmount;
     const playerCombatStrength =
       botField.effect === "weaken" && blockedAbilityOwner !== "bot"
-        ? getStrengthAfterWeaken(playerField.currentStrength)
-        : playerField.currentStrength;
+        ? getStrengthAfterWeaken(playerStrengthAfterDrain)
+        : playerStrengthAfterDrain;
     const botCombatStrength =
       playerField.effect === "weaken" && blockedAbilityOwner !== "player"
-        ? getStrengthAfterWeaken(botField.currentStrength)
-        : botField.currentStrength;
+        ? getStrengthAfterWeaken(botStrengthAfterDrain)
+        : botStrengthAfterDrain;
+    const normalDamageToPlayer = getNormalCombatDamage(
+      botCombatStrength,
+      playerField,
+      blockedAbilityOwner === "player",
+    );
+    const normalDamageToBot = getNormalCombatDamage(
+      playerCombatStrength,
+      botField,
+      blockedAbilityOwner === "bot",
+    );
     const abilityTimers: number[] = [];
     let damageDelay = 2650;
 
@@ -367,17 +541,17 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
           playerField.currentHealth +
             playerAbilityHealth -
             damageToPlayerFromAbility -
-            botCombatStrength,
+            normalDamageToPlayer,
         ),
         botHealth: Math.max(
           0,
           botField.currentHealth +
             botAbilityHealth -
             damageToBotFromAbility -
-            playerCombatStrength,
+            normalDamageToBot,
         ),
-        playerDamage: botCombatStrength,
-        botDamage: playerCombatStrength,
+        playerDamage: normalDamageToPlayer,
+        botDamage: normalDamageToBot,
       });
     }, damageDelay + 620);
 
@@ -390,6 +564,10 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       let activeBotCard = { ...botField };
       let activePlayerHand = [...playerHand];
       let activeBotHand = [...botHand];
+      let activePlayerGraveyard = [...playerGraveyard];
+      let activeBotGraveyard = [...botGraveyard];
+      let activePlayerElyraAbilityUsed = playerElyraAbilityUsed;
+      let activeBotElyraAbilityUsed = botElyraAbilityUsed;
       const combatMessages: string[] = [];
       let resolvedHandBuff: AbilityBuff | undefined;
 
@@ -414,11 +592,24 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
               activeBotHand,
               Math.random,
               activeBotCard,
+              activePlayerGraveyard,
+              activePlayerElyraAbilityUsed,
+              secondCardOwner === "player",
             );
             activePlayerCard = activation.card;
             activePlayerHand = activation.hand;
             activeBotHand = activation.opponentHand ?? activeBotHand;
             activeBotCard = activation.opponentCard ?? activeBotCard;
+            activePlayerGraveyard =
+              activation.graveyard ?? activePlayerGraveyard;
+            activePlayerGraveyard.push(
+              ...(activation.defeatedAlliedCards ?? []),
+            );
+            activeBotGraveyard.push(
+              ...(activation.defeatedOpponentCards ?? []),
+            );
+            activePlayerElyraAbilityUsed =
+              activePlayerElyraAbilityUsed || Boolean(activation.abilityUsed);
             combatMessages.push(activation.message);
             resolvedHandBuff = activation.buff;
           }
@@ -439,33 +630,88 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
             activePlayerHand,
             Math.random,
             activePlayerCard,
+            activeBotGraveyard,
+            activeBotElyraAbilityUsed,
+            secondCardOwner === "bot",
           );
           activeBotCard = activation.card;
           activeBotHand = activation.hand;
           activePlayerHand = activation.opponentHand ?? activePlayerHand;
           activePlayerCard = activation.opponentCard ?? activePlayerCard;
+          activeBotGraveyard = activation.graveyard ?? activeBotGraveyard;
+          activeBotGraveyard.push(
+            ...(activation.defeatedAlliedCards ?? []),
+          );
+          activePlayerGraveyard.push(
+            ...(activation.defeatedOpponentCards ?? []),
+          );
+          activeBotElyraAbilityUsed =
+            activeBotElyraAbilityUsed || Boolean(activation.abilityUsed);
           combatMessages.push(activation.message);
         }
       });
 
-      const damageToPlayer = activeBotCard.currentStrength;
-      const damageToBot = activePlayerCard.currentStrength;
+      const damageToPlayer = getNormalCombatDamage(
+        activeBotCard.currentStrength,
+        activePlayerCard,
+        blockedAbilityOwner === "player",
+      );
+      const damageToBot = getNormalCombatDamage(
+        activePlayerCard.currentStrength,
+        activeBotCard,
+        blockedAbilityOwner === "bot",
+      );
       activePlayerCard.currentHealth -= damageToPlayer;
       activeBotCard.currentHealth -= damageToBot;
       combatMessages.push(
         `${activePlayerCard.name} and ${activeBotCard.name} deal ${damageToBot} and ${damageToPlayer} damage.`,
       );
 
+      let returningPlayerCard = prepareSurvivor(activePlayerCard);
+      let returningBotCard = prepareSurvivor(activeBotCard);
+      const playerCurseActivates =
+        activePlayerCard.effect === "survivor-curse" &&
+        activePlayerCard.currentHealth > 0 &&
+        blockedAbilityOwner !== "player";
+      const botCurseActivates =
+        activeBotCard.effect === "survivor-curse" &&
+        activeBotCard.currentHealth > 0 &&
+        blockedAbilityOwner !== "bot";
+
+      if (playerCurseActivates && activeBotCard.currentHealth > 0) {
+        const previousStrength = returningBotCard.currentStrength;
+        returningBotCard = applyPermanentStrengthLoss(returningBotCard);
+        const lostStrength = previousStrength - returningBotCard.currentStrength;
+        combatMessages.push(
+          lostStrength > 0
+            ? `${activePlayerCard.name}'s curse permanently reduces ${activeBotCard.name}'s Strength by ${lostStrength}.`
+            : `${activeBotCard.name}'s Strength cannot be reduced below 1.`,
+        );
+      }
+
+      if (botCurseActivates && activePlayerCard.currentHealth > 0) {
+        const previousStrength = returningPlayerCard.currentStrength;
+        returningPlayerCard = applyPermanentStrengthLoss(returningPlayerCard);
+        const lostStrength =
+          previousStrength - returningPlayerCard.currentStrength;
+        combatMessages.push(
+          lostStrength > 0
+            ? `${activeBotCard.name}'s curse permanently reduces ${activePlayerCard.name}'s Strength by ${lostStrength}.`
+            : `${activePlayerCard.name}'s Strength cannot be reduced below 1.`,
+        );
+      }
+
       if (activePlayerCard.effect === "steal") {
         combatMessages.push(
           `${activePlayerCard.name} disappears after the battle.`,
         );
       } else if (activePlayerCard.currentHealth > 0) {
-        activePlayerHand.push(prepareSurvivor(activePlayerCard));
+        activePlayerHand.push(returningPlayerCard);
         combatMessages.push(
           `${activePlayerCard.name} returns to your hand with ${activePlayerCard.currentHealth} HP.`,
         );
       } else {
+        activePlayerGraveyard.push(returningPlayerCard);
         combatMessages.push(`${activePlayerCard.name} is defeated.`);
       }
 
@@ -474,11 +720,12 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
           `${activeBotCard.name} disappears after the battle.`,
         );
       } else if (activeBotCard.currentHealth > 0) {
-        activeBotHand.push(prepareSurvivor(activeBotCard));
+        activeBotHand.push(returningBotCard);
         combatMessages.push(
           `${activeBotCard.name} returns to the opponent's hand with ${activeBotCard.currentHealth} HP.`,
         );
       } else {
+        activeBotGraveyard.push(returningBotCard);
         combatMessages.push(`${activeBotCard.name} is defeated.`);
       }
 
@@ -494,6 +741,10 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
 
       setPlayerHand(activePlayerHand);
       setBotHand(activeBotHand);
+      setPlayerGraveyard(activePlayerGraveyard);
+      setBotGraveyard(activeBotGraveyard);
+      setPlayerElyraAbilityUsed(activePlayerElyraAbilityUsed);
+      setBotElyraAbilityUsed(activeBotElyraAbilityUsed);
       if (resolvedHandBuff) {
         setHandBuffAnimation(resolvedHandBuff);
       }
@@ -522,7 +773,9 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       setTurn(nextTurn);
       setPhase("placing");
       setStatus(
-        nextTurn === "player" ? "Your turn — choose a card" : "The opponent goes first",
+        nextTurn === "player"
+          ? "Your turn — choose a card"
+          : `${opponent.name} goes first`,
       );
     }, damageDelay + 2900);
 
@@ -536,11 +789,19 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
   }, [
     blockedAbilityOwner,
     botField,
+    botGraveyard,
     botHand,
+    botElyraAbilityUsed,
+    botSecondStrengthBonus,
+    opponent.name,
     phase,
     playerField,
+    playerGraveyard,
     playerHand,
+    playerElyraAbilityUsed,
+    playerSecondStrengthBonus,
     round,
+    secondCardOwner,
     targetSelection,
   ]);
 
@@ -548,6 +809,53 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
     <MotionConfig reducedMotion="user">
       <LayoutGroup id="battle-card-placement">
       <main className="battle-screen">
+      <AnimatePresence>
+        {showOpponentIntro && (
+          <motion.section
+            className="opponent-intro"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+            role="status"
+            aria-label={`Level ${level}. Your opponent is ${opponent.name}.`}
+          >
+            <motion.div
+              className="opponent-intro__content"
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -14, scale: 1.025 }}
+              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <motion.span
+                className="opponent-intro__level"
+                initial={{ opacity: 0, letterSpacing: "0.55em" }}
+                animate={{ opacity: 1, letterSpacing: "0.34em" }}
+                transition={{ delay: 0.18, duration: 0.65 }}
+              >
+                Level {level}
+              </motion.span>
+              <motion.div
+                className="opponent-intro__portrait"
+                initial={{ opacity: 0, scale: 0.72, filter: "brightness(0.45)" }}
+                animate={{ opacity: 1, scale: 1, filter: "brightness(1)" }}
+                transition={{
+                  delay: 0.12,
+                  duration: 0.82,
+                  ease: [0.22, 1, 0.36, 1],
+                }}
+              >
+                <img src={opponent.image} alt={opponent.name} />
+              </motion.div>
+              <div className="opponent-intro__identity">
+                <span>Your Opponent</span>
+                <h2>{opponent.name}</h2>
+              </div>
+            </motion.div>
+          </motion.section>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {placementPreview && (
           <motion.div
@@ -580,8 +888,8 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
       <section className="battle-board" aria-labelledby="level-title">
         <header className="battle-header">
           <div>
-            <span>Darkwood Passage</span>
-            <h1 id="level-title">Level 1</h1>
+            <span>{opponent.location}</span>
+            <h1 id="level-title">Level {level}</h1>
           </div>
           <div className="battle-objective">
             <span>Objective</span>
@@ -594,9 +902,15 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
           </div>
         </header>
 
-        <section className="opponent-area" aria-label="Opponent hand">
+        <section
+          className="opponent-area"
+          aria-label={`${opponent.name}'s hand`}
+        >
+          <div className="opponent-portrait" aria-hidden="true">
+            <img src={opponent.image} alt="" />
+          </div>
           <div className="battle-zone-label">
-            <span>Ramon</span>
+            <span>{opponent.name}</span>
             <strong>{botHand.length} cards</strong>
           </div>
           <div className="opponent-hand">
@@ -700,12 +1014,7 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                     (playerHand.length > 0 ||
                       !canReceiveTargetedAbility(playerField, playerField))
                   }
-                  displayedStrength={
-                    botField?.effect === "weaken" &&
-                    blockedAbilityOwner !== "bot"
-                      ? getStrengthAfterWeaken(playerField.currentStrength)
-                      : undefined
-                  }
+                  displayedStrength={playerDisplayedStrength}
                   damage={damagePreview?.playerDamage}
                   displayedHealth={damagePreview?.playerHealth}
                 />
@@ -782,12 +1091,7 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                   field
                   owner="bot"
                   invalidTarget={targetSelection === "waiting"}
-                  displayedStrength={
-                    playerField?.effect === "weaken" &&
-                    blockedAbilityOwner !== "player"
-                      ? getStrengthAfterWeaken(botField.currentStrength)
-                      : undefined
-                  }
+                  displayedStrength={botDisplayedStrength}
                   damage={damagePreview?.botDamage}
                   displayedHealth={damagePreview?.botHealth}
                 />
@@ -810,7 +1114,9 @@ export function BattleScreen({ playerDeck }: { playerDeck: CardDefinition[] }) {
                 </AnimatePresence>
               </motion.div>
             ) : (
-              <div className="field-placeholder field-placeholder--bot"><span>Opponent</span></div>
+              <div className="field-placeholder field-placeholder--bot">
+                <span>{opponent.name}</span>
+              </div>
             )}
           </div>
         </section>

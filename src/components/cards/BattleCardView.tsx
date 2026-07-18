@@ -28,7 +28,7 @@ export function BattleCardView({
 }: BattleCardViewProps) {
   return (
     <button
-      className={`battle-card${field ? " battle-card--field" : ""}${owner ? ` battle-card--${owner}` : ""}${damage !== undefined ? " battle-card--damaged" : ""}${displayedStrength !== undefined && displayedStrength < card.currentStrength ? " battle-card--weakened" : ""}${targetable ? " battle-card--targetable" : ""}${invalidTarget ? " battle-card--invalid-target" : ""}${card.ability.length > 110 ? " battle-card--verbose" : ""}`}
+      className={`battle-card${field ? " battle-card--field" : ""}${owner ? ` battle-card--${owner}` : ""}${damage !== undefined ? " battle-card--damaged" : ""}${displayedStrength !== undefined && displayedStrength < card.currentStrength ? " battle-card--weakened" : ""}${targetable ? " battle-card--targetable" : ""}${invalidTarget ? " battle-card--invalid-target" : ""}`}
       type="button"
       disabled={disabled}
       onClick={onClick}
@@ -51,15 +51,7 @@ export function BattleCardView({
         {card.ability !== "None" && (
           <span className="battle-card__hover-ability">
             <small>Special Ability</small>
-            <strong
-              className={
-                card.ability.length > 110
-                  ? "battle-card__ability--very-long"
-                  : card.ability.length > 25
-                    ? "battle-card__ability--long"
-                    : ""
-              }
-            >
+            <strong>
               <AbilityText ability={card.ability} />
             </strong>
           </span>

@@ -7,7 +7,12 @@ export type AbilityEffect =
   | "chaos"
   | "weaken"
   | "silence"
-  | "area-damage";
+  | "area-damage"
+  | "survivor-curse"
+  | "resurrect"
+  | "second-strength"
+  | "damage-reduction"
+  | "strength-drain";
 
 export type CardDefinition = {
   name: string;

@@ -4,13 +4,17 @@ import { cards, DECK_SIZE } from "../data/cards";
 type DeckScreenProps = {
   selectedCards: number[];
   onToggleCard: (cardIndex: number) => void;
+  onRandomize: () => void;
   onConfirm: () => void;
+  isPreparing?: boolean;
 };
 
 export function DeckScreen({
   selectedCards,
   onToggleCard,
+  onRandomize,
   onConfirm,
+  isPreparing = false,
 }: DeckScreenProps) {
   return (
     <main className="deck-screen">
@@ -32,7 +36,7 @@ export function DeckScreen({
 
             return (
               <button
-                className={`card-slot card-slot--card${isSelected ? " card-slot--selected" : ""}${card.ability.length > 110 ? " card-slot--verbose" : ""}`}
+                className={`card-slot card-slot--card${isSelected ? " card-slot--selected" : ""}`}
                 type="button"
                 aria-label={`${card.name}. Strength ${card.strengthRange ? `randomly between ${card.strengthRange[0]} and ${card.strengthRange[1]}` : card.strength}. Health ${card.health}.${card.ability !== "None" ? ` Special Ability: ${card.ability}.` : ""}`}
                 aria-pressed={isSelected}
@@ -57,15 +61,7 @@ export function DeckScreen({
                   {card.ability !== "None" && (
                     <span className="card-ability">
                       <span>Special Ability</span>
-                      <strong
-                        className={
-                          card.ability.length > 110
-                            ? "card-ability__text--very-long"
-                            : card.ability.length > 25
-                              ? "card-ability__text--long"
-                              : ""
-                        }
-                      >
+                      <strong>
                         <AbilityText ability={card.ability} />
                       </strong>
                     </span>
@@ -82,14 +78,25 @@ export function DeckScreen({
             <strong>{selectedCards.length}/{DECK_SIZE}</strong>
           </div>
 
-          <button
-            className="confirm-button"
-            type="button"
-            disabled={selectedCards.length !== DECK_SIZE}
-            onClick={onConfirm}
-          >
-            Confirm Deck
-          </button>
+          <div className="deck-actions">
+            <button
+              className="randomize-button"
+              type="button"
+              disabled={isPreparing}
+              onClick={onRandomize}
+            >
+              Randomize Deck
+            </button>
+
+            <button
+              className="confirm-button"
+              type="button"
+              disabled={selectedCards.length !== DECK_SIZE || isPreparing}
+              onClick={onConfirm}
+            >
+              {isPreparing ? "Preparing Battle..." : "Confirm Deck"}
+            </button>
+          </div>
         </footer>
       </section>
     </main>
