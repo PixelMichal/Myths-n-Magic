@@ -40,7 +40,7 @@ const preloadImage = (source: string) =>
   });
 
 function VersionBadge() {
-  return <span className="version-badge">Version 1.2</span>;
+  return <span className="version-badge">Version 1.3</span>;
 }
 
 function App() {
