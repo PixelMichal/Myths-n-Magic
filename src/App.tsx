@@ -10,13 +10,15 @@ import { opponents } from "./data/opponents";
 import type { CardDefinition } from "./game/types";
 import { BattleScreen } from "./screens/BattleScreen";
 import { CampaignCompleteScreen } from "./screens/CampaignCompleteScreen";
+import { CampaignDefeatScreen } from "./screens/CampaignDefeatScreen";
+import { CampaignMapScreen } from "./screens/CampaignMapScreen";
 import { DeckScreen } from "./screens/DeckScreen";
 import { RewardScreen } from "./screens/RewardScreen";
 import { TitleScreen } from "./screens/TitleScreen";
 import soundtrack1 from "./soundtrack/soundtrack1.mp3";
 import "./styles/game.css";
 
-type Screen = "title" | "deck" | "battle" | "reward" | "complete";
+type Screen = "title" | "deck" | "battle" | "reward" | "map" | "complete" | "defeat";
 
 const preloadImage = (source: string) =>
   new Promise<HTMLImageElement>((resolve) => {
@@ -50,6 +52,7 @@ function App() {
   const [playerDeck, setPlayerDeck] = useState<CardDefinition[]>([]);
   const [level, setLevel] = useState<1 | 2 | 3>(1);
   const [rewardLevel, setRewardLevel] = useState<1 | 2>(1);
+  const [pendingLevel, setPendingLevel] = useState<2 | 3>(2);
   const [isPreparingBattle, setIsPreparingBattle] = useState(false);
 
   const preloadCampaignImages = () => {
@@ -131,15 +134,17 @@ function App() {
     setIsPreparingBattle(false);
   };
 
-  const beginLevelTwo = (updatedDeck: CardDefinition[]) => {
+  const openCampaignMap = (
+    updatedDeck: CardDefinition[],
+    nextLevel: 2 | 3,
+  ) => {
     setPlayerDeck(updatedDeck);
-    setLevel(2);
-    setScreen("battle");
+    setPendingLevel(nextLevel);
+    setScreen("map");
   };
 
-  const beginLevelThree = (updatedDeck: CardDefinition[]) => {
-    setPlayerDeck(updatedDeck);
-    setLevel(3);
+  const beginMappedLevel = () => {
+    setLevel(pendingLevel);
     setScreen("battle");
   };
 
@@ -153,6 +158,7 @@ function App() {
     setPlayerDeck([]);
     setLevel(1);
     setRewardLevel(1);
+    setPendingLevel(2);
     setScreen("title");
   };
 
@@ -171,6 +177,7 @@ function App() {
 
             openRewardScreen(level);
           }}
+          onDefeat={() => setScreen("defeat")}
         />
         <VersionBadge />
       </>
@@ -189,7 +196,21 @@ function App() {
           nextOpponentName={
             rewardLevel === 1 ? opponents[2].name : opponents[3].name
           }
-          onComplete={rewardLevel === 1 ? beginLevelTwo : beginLevelThree}
+          onComplete={(updatedDeck) =>
+            openCampaignMap(updatedDeck, rewardLevel === 1 ? 2 : 3)
+          }
+        />
+        <VersionBadge />
+      </>
+    );
+  }
+
+  if (screen === "map") {
+    return (
+      <>
+        <CampaignMapScreen
+          destinationLevel={pendingLevel}
+          onContinue={beginMappedLevel}
         />
         <VersionBadge />
       </>
@@ -200,6 +221,15 @@ function App() {
     return (
       <>
         <CampaignCompleteScreen onReturnToMenu={returnToMainMenu} />
+        <VersionBadge />
+      </>
+    );
+  }
+
+  if (screen === "defeat") {
+    return (
+      <>
+        <CampaignDefeatScreen onReturnToMenu={returnToMainMenu} />
         <VersionBadge />
       </>
     );

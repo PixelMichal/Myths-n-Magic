@@ -4,7 +4,9 @@ import { BattleCardView } from "../components/cards/BattleCardView";
 import type { OpponentDefinition } from "../data/opponents";
 import {
   activateAbility,
+  applyPermanentStrengthGain,
   applyPermanentStrengthLoss,
+  chooseBotCard,
   createHand,
   determineBattleResult,
   getBlockedAbilityOwner,
@@ -15,6 +17,7 @@ import {
   INITIAL_HAND_SIZE,
   MAX_ROUNDS,
   prepareCardForBattle,
+  prepareResurrectedCard,
   prepareSurvivor,
 } from "../game/battleLogic";
 import type { AbilityBuff } from "../game/battleLogic";
@@ -28,6 +31,7 @@ import type {
 declare global {
   interface Window {
     winBattle?: () => string;
+    loseBattle?: () => string;
   }
 }
 
@@ -43,6 +47,7 @@ type BattleScreenProps = {
   level: 1 | 2 | 3;
   opponent: OpponentDefinition;
   onVictory?: () => void;
+  onDefeat?: () => void;
 };
 
 export function BattleScreen({
@@ -50,6 +55,7 @@ export function BattleScreen({
   level,
   opponent,
   onVictory,
+  onDefeat,
 }: BattleScreenProps) {
   const [showOpponentIntro, setShowOpponentIntro] = useState(true);
   const [playerHand, setPlayerHand] = useState(() => createHand(playerDeck, "player"));
@@ -60,6 +66,8 @@ export function BattleScreen({
   const [botGraveyard, setBotGraveyard] = useState<BattleCard[]>([]);
   const [playerElyraAbilityUsed, setPlayerElyraAbilityUsed] = useState(false);
   const [botElyraAbilityUsed, setBotElyraAbilityUsed] = useState(false);
+  const [opponentPassiveUsed, setOpponentPassiveUsed] = useState(false);
+  const [botDefeatCount, setBotDefeatCount] = useState(0);
   const [playerField, setPlayerField] = useState<BattleCard | null>(null);
   const [botField, setBotField] = useState<BattleCard | null>(null);
   const [turn, setTurn] = useState<Owner>("player");
@@ -157,6 +165,47 @@ export function BattleScreen({
   }, []);
 
   useEffect(() => {
+    if (
+      opponent.passive.effect !== "ashen-blessing" ||
+      opponentPassiveUsed ||
+      phase !== "placing" ||
+      round !== 1
+    ) {
+      return;
+    }
+
+    const passiveTimer = window.setTimeout(() => {
+      setBotHand((currentHand) => {
+        if (currentHand.length === 0) {
+          return currentHand;
+        }
+
+        const targetIndex = Math.floor(Math.random() * currentHand.length);
+        return currentHand.map((card, index) =>
+          index === targetIndex ? applyPermanentStrengthGain(card) : card,
+        );
+      });
+      setOpponentPassiveUsed(true);
+      setStatus(`${opponent.name} invokes ${opponent.passive.name}`);
+      setBattleLog((currentLog) =>
+        [
+          ...currentLog,
+          `${opponent.passive.name}: A hidden card permanently gains 1 Strength.`,
+        ].slice(-6),
+      );
+    }, 3000);
+
+    return () => window.clearTimeout(passiveTimer);
+  }, [
+    opponent.name,
+    opponent.passive.effect,
+    opponent.passive.name,
+    opponentPassiveUsed,
+    phase,
+    round,
+  ]);
+
+  useEffect(() => {
     if (result !== "Victory" || !onVictory) {
       return;
     }
@@ -164,6 +213,15 @@ export function BattleScreen({
     const rewardTimer = window.setTimeout(onVictory, 1800);
     return () => window.clearTimeout(rewardTimer);
   }, [onVictory, result]);
+
+  useEffect(() => {
+    if (result !== "Defeat" || !onDefeat) {
+      return;
+    }
+
+    const defeatTimer = window.setTimeout(onDefeat, 1200);
+    return () => window.clearTimeout(defeatTimer);
+  }, [onDefeat, result]);
 
   useEffect(() => {
     const triggerTestVictory = () => {
@@ -191,11 +249,40 @@ export function BattleScreen({
       return `Level ${level} victory triggered.`;
     };
 
+    const triggerTestDefeat = () => {
+      setShowOpponentIntro(false);
+      setPhase("finished");
+      setResult("Defeat");
+      setStatus("Defeat");
+      setTurn("player");
+      setPlayerField(null);
+      setBotField(null);
+      setPlayerHand([]);
+      setPlacementPreview(null);
+      setIsPlayerCardLanding(false);
+      setIsAttacking(false);
+      setShowImpact(false);
+      setDamagePreview(null);
+      setTargetSelection(null);
+      setBattleLog((currentLog) =>
+        [
+          ...currentLog,
+          `Test command: Level ${level} defeat against ${opponent.name}.`,
+        ].slice(-6),
+      );
+
+      return `Level ${level} defeat triggered.`;
+    };
+
     window.winBattle = triggerTestVictory;
+    window.loseBattle = triggerTestDefeat;
 
     return () => {
       if (window.winBattle === triggerTestVictory) {
         delete window.winBattle;
+      }
+      if (window.loseBattle === triggerTestDefeat) {
+        delete window.loseBattle;
       }
     };
   }, [level, opponent.name]);
@@ -355,7 +442,13 @@ export function BattleScreen({
     }
 
     const timer = window.setTimeout(() => {
-      const card = botHand[Math.floor(Math.random() * botHand.length)];
+      const card = chooseBotCard(botHand, {
+        opponentCard: playerField ?? undefined,
+        opponentHandSize: playerHand.length,
+        alliedGraveyardSize: botGraveyard.length,
+        resurrectionUsed: botElyraAbilityUsed,
+        playedSecond: Boolean(playerField),
+      });
       setBotHand((currentHand) =>
         currentHand.filter((handCard) => handCard.id !== card.id),
       );
@@ -374,7 +467,17 @@ export function BattleScreen({
     }, 800);
 
     return () => window.clearTimeout(timer);
-  }, [botField, botHand, opponent.name, phase, playerField, turn]);
+  }, [
+    botElyraAbilityUsed,
+    botField,
+    botGraveyard.length,
+    botHand,
+    opponent.name,
+    phase,
+    playerField,
+    playerHand.length,
+    turn,
+  ]);
 
   useEffect(() => {
     if (phase !== "combat" || !playerField || !botField) {
@@ -568,6 +671,8 @@ export function BattleScreen({
       let activeBotGraveyard = [...botGraveyard];
       let activePlayerElyraAbilityUsed = playerElyraAbilityUsed;
       let activeBotElyraAbilityUsed = botElyraAbilityUsed;
+      let activeBotDefeatCount = botDefeatCount;
+      let activeOpponentPassiveUsed = opponentPassiveUsed;
       const combatMessages: string[] = [];
       let resolvedHandBuff: AbilityBuff | undefined;
 
@@ -605,9 +710,9 @@ export function BattleScreen({
             activePlayerGraveyard.push(
               ...(activation.defeatedAlliedCards ?? []),
             );
-            activeBotGraveyard.push(
-              ...(activation.defeatedOpponentCards ?? []),
-            );
+            const defeatedBotCards = activation.defeatedOpponentCards ?? [];
+            activeBotGraveyard.push(...defeatedBotCards);
+            activeBotDefeatCount += defeatedBotCards.length;
             activePlayerElyraAbilityUsed =
               activePlayerElyraAbilityUsed || Boolean(activation.abilityUsed);
             combatMessages.push(activation.message);
@@ -639,9 +744,9 @@ export function BattleScreen({
           activePlayerHand = activation.opponentHand ?? activePlayerHand;
           activePlayerCard = activation.opponentCard ?? activePlayerCard;
           activeBotGraveyard = activation.graveyard ?? activeBotGraveyard;
-          activeBotGraveyard.push(
-            ...(activation.defeatedAlliedCards ?? []),
-          );
+          const defeatedBotCards = activation.defeatedAlliedCards ?? [];
+          activeBotGraveyard.push(...defeatedBotCards);
+          activeBotDefeatCount += defeatedBotCards.length;
           activePlayerGraveyard.push(
             ...(activation.defeatedOpponentCards ?? []),
           );
@@ -726,7 +831,34 @@ export function BattleScreen({
         );
       } else {
         activeBotGraveyard.push(returningBotCard);
+        activeBotDefeatCount += 1;
         combatMessages.push(`${activeBotCard.name} is defeated.`);
+      }
+
+      if (
+        opponent.passive.effect === "dark-revival" &&
+        !activeOpponentPassiveUsed &&
+        activeBotDefeatCount >= 3 &&
+        activeBotGraveyard.length > 0
+      ) {
+        const weakestCard = activeBotGraveyard.reduce((weakest, card) => {
+          if (card.currentStrength !== weakest.currentStrength) {
+            return card.currentStrength < weakest.currentStrength
+              ? card
+              : weakest;
+          }
+
+          return card.health < weakest.health ? card : weakest;
+        });
+        const revivedCard = prepareResurrectedCard(weakestCard);
+        activeBotGraveyard = activeBotGraveyard.filter(
+          (card) => card.id !== weakestCard.id,
+        );
+        activeBotHand.push(revivedCard);
+        activeOpponentPassiveUsed = true;
+        combatMessages.push(
+          `${opponent.passive.name}: ${opponent.name} returns ${revivedCard.name} with 1 Health.`,
+        );
       }
 
       const cardsEliminated =
@@ -745,6 +877,8 @@ export function BattleScreen({
       setBotGraveyard(activeBotGraveyard);
       setPlayerElyraAbilityUsed(activePlayerElyraAbilityUsed);
       setBotElyraAbilityUsed(activeBotElyraAbilityUsed);
+      setBotDefeatCount(activeBotDefeatCount);
+      setOpponentPassiveUsed(activeOpponentPassiveUsed);
       if (resolvedHandBuff) {
         setHandBuffAnimation(resolvedHandBuff);
       }
@@ -792,8 +926,12 @@ export function BattleScreen({
     botGraveyard,
     botHand,
     botElyraAbilityUsed,
+    botDefeatCount,
     botSecondStrengthBonus,
     opponent.name,
+    opponent.passive.effect,
+    opponent.passive.name,
+    opponentPassiveUsed,
     phase,
     playerField,
     playerGraveyard,
@@ -851,6 +989,13 @@ export function BattleScreen({
                 <span>Your Opponent</span>
                 <h2>{opponent.name}</h2>
               </div>
+              {opponent.passive.effect !== "none" && (
+                <div className="opponent-intro__passive">
+                  <span>Passive Ability</span>
+                  <strong>{opponent.passive.name}</strong>
+                  <small>{opponent.passive.description}</small>
+                </div>
+              )}
             </motion.div>
           </motion.section>
         )}
@@ -913,6 +1058,14 @@ export function BattleScreen({
             <span>{opponent.name}</span>
             <strong>{botHand.length} cards</strong>
           </div>
+          {opponent.passive.effect !== "none" && (
+            <div
+              className={`opponent-passive${opponentPassiveUsed ? " opponent-passive--used" : ""}`}
+            >
+              <span>Passive · {opponent.passive.name}</span>
+              <small>{opponent.passive.description}</small>
+            </div>
+          )}
           <div className="opponent-hand">
             {botHand.map((card) => <span className="card-back" key={card.id} />)}
           </div>

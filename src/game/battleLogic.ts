@@ -118,6 +118,18 @@ export const applyPermanentStrengthLoss = (
   currentStrength: Math.max(1, card.currentStrength - amount),
 });
 
+export const applyPermanentStrengthGain = (
+  card: BattleCard,
+  amount = 1,
+): BattleCard => ({
+  ...card,
+  strength: card.strength + amount,
+  strengthRange: card.strengthRange
+    ? [card.strengthRange[0] + amount, card.strengthRange[1] + amount]
+    : undefined,
+  currentStrength: card.currentStrength + amount,
+});
+
 export const prepareResurrectedCard = (card: BattleCard): BattleCard => ({
   ...prepareSurvivor(card),
   currentHealth: 1,
@@ -149,6 +161,150 @@ export const getNormalCombatDamage = (
         ? 1
         : 0),
   );
+
+export type BotDecisionContext = {
+  opponentCard?: BattleCard;
+  opponentHandSize: number;
+  alliedGraveyardSize: number;
+  resurrectionUsed: boolean;
+  playedSecond: boolean;
+};
+
+const getBotCardScore = (
+  card: BattleCard,
+  alliedHand: BattleCard[],
+  context: BotDecisionContext,
+) => {
+  const {
+    opponentCard,
+    opponentHandSize,
+    alliedGraveyardSize,
+    resurrectionUsed,
+    playedSecond,
+  } = context;
+  let score = card.currentStrength * 1.25 + card.currentHealth * 0.48;
+  let combatStrength = card.currentStrength + card.nextBattleStrengthBonus;
+
+  if (card.effect === "second-strength") {
+    score += playedSecond ? 4.5 : -1.5;
+    combatStrength += playedSecond ? 2 : 0;
+  }
+
+  if (card.effect === "damage-reduction") {
+    score += 2.2;
+  }
+
+  if (card.effect === "area-damage") {
+    score += opponentHandSize * 0.72;
+  }
+
+  if (card.effect === "resurrect") {
+    score += alliedGraveyardSize > 0 && !resurrectionUsed ? 5 : -2.6;
+  }
+
+  if (card.effect === "random-health") {
+    score += alliedHand.length > 1 ? 1.4 : -1;
+  }
+
+  if (card.effect === "health" || card.effect === "strength") {
+    score += alliedHand.length > 1 ? 1.15 : 0.25;
+  }
+
+  if (card.effect === "chaos") {
+    score += opponentHandSize > 0 ? 0.8 : -0.4;
+  }
+
+  if (card.effect === "steal") {
+    score += opponentHandSize > 0 ? 2.2 : -1;
+  }
+
+  if (!opponentCard) {
+    if (card.effect === "silence") {
+      score += 3.4;
+    }
+    if (card.effect === "survivor-curse") {
+      score += 1.6;
+    }
+    return score;
+  }
+
+  const blocksOpponentAbility = card.effect === "silence" && !playedSecond;
+  let opponentStrength = opponentCard.currentStrength;
+
+  if (card.effect === "weaken") {
+    const reducedStrength = getStrengthAfterWeaken(opponentStrength);
+    score += (opponentStrength - reducedStrength) * 1.8;
+    opponentStrength = reducedStrength;
+  }
+
+  if (card.effect === "strength-drain") {
+    const drainedStrength = getStrengthDrainAmount(opponentStrength);
+    opponentStrength -= drainedStrength;
+    combatStrength += drainedStrength;
+    score += drainedStrength * 2.8;
+  }
+
+  if (!blocksOpponentAbility) {
+    if (opponentCard.effect === "weaken") {
+      combatStrength = getStrengthAfterWeaken(combatStrength);
+    }
+
+    if (opponentCard.effect === "strength-drain") {
+      const drainedStrength = getStrengthDrainAmount(combatStrength);
+      combatStrength -= drainedStrength;
+      opponentStrength += drainedStrength;
+    }
+  }
+
+  if (card.effect === "silence") {
+    score += playedSecond
+      ? -1.8
+      : opponentCard.effect === "none"
+        ? 0.4
+        : 5.2;
+  }
+
+  const incomingDamage = getNormalCombatDamage(
+    opponentStrength,
+    card,
+    false,
+  );
+  const outgoingDamage = getNormalCombatDamage(
+    combatStrength,
+    opponentCard,
+    blocksOpponentAbility,
+  );
+  const remainingHealth = card.currentHealth - incomingDamage;
+  const opponentRemainingHealth = opponentCard.currentHealth - outgoingDamage;
+
+  score += Math.max(-2, remainingHealth * 0.42);
+  score += remainingHealth > 0 ? 4.2 : -2.2;
+  score += opponentRemainingHealth <= 0 ? 6.4 : 0;
+  score += remainingHealth > 0 && opponentRemainingHealth <= 0 ? 2.8 : 0;
+
+  if (card.effect === "survivor-curse" && remainingHealth > 0) {
+    score += 3.2;
+  }
+
+  return score;
+};
+
+export const chooseBotCard = (
+  hand: BattleCard[],
+  context: BotDecisionContext,
+  random: () => number = Math.random,
+) => {
+  const scoredCards = hand.map((card) => ({
+    card,
+    score: getBotCardScore(card, hand, context),
+  }));
+  const highestScore = Math.max(...scoredCards.map(({ score }) => score));
+  const bestCards = scoredCards.filter(
+    ({ score }) => highestScore - score < 0.2,
+  );
+
+  return bestCards[Math.floor(random() * bestCards.length)].card;
+};
 
 const grantHealth = (card: BattleCard, amount: number) => {
   const updatedHealth = getHealthAfterBonus(card, amount);

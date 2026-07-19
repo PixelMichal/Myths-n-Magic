@@ -9,6 +9,11 @@ export type OpponentDefinition = {
   image: string;
   location: string;
   deck: CardDefinition[];
+  passive: {
+    name: string;
+    description: string;
+    effect: "none" | "ashen-blessing" | "dark-revival";
+  };
 };
 
 const createOpponentDeck = (cardNames: string[]) =>
@@ -29,6 +34,11 @@ export const opponents: Record<1 | 2 | 3, OpponentDefinition> = {
     name: "Ramon",
     image: ramonCard,
     location: "Darkwood Passage",
+    passive: {
+      name: "None",
+      description: "Ramon relies on standard card tactics.",
+      effect: "none",
+    },
     deck: createOpponentDeck([
       "Erden",
       "Lunara",
@@ -42,6 +52,12 @@ export const opponents: Record<1 | 2 | 3, OpponentDefinition> = {
     name: "Kaelzun",
     image: kaelzunCard,
     location: "Ashen Citadel",
+    passive: {
+      name: "Ashen Favor",
+      description:
+        "At the start of battle, a random card in Kaelzun's hand permanently gains 1 Strength.",
+      effect: "ashen-blessing",
+    },
     deck: createOpponentDeck([
       "Erden",
       "Valtor",
@@ -55,6 +71,12 @@ export const opponents: Record<1 | 2 | 3, OpponentDefinition> = {
     name: "Mordrath",
     image: mordrathCard,
     location: "Obsidian Throne",
+    passive: {
+      name: "Gravebound",
+      description:
+        "After losing his third card, Mordrath returns his weakest defeated card with 1 Health.",
+      effect: "dark-revival",
+    },
     deck: createOpponentDeck([
       "Durnok",
       "Aegor",
